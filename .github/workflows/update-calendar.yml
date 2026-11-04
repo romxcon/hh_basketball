@@ -2,8 +2,8 @@ name: Update calendar
 
 on:
   schedule:
-    - cron: "0 12 * * *"
-  workflow_dispatch:
+    - cron: "0 12 * * *"   # daily at 12:00 UTC (6-7 AM Central)
+  workflow_dispatch:         # lets you run it manually from the Actions tab
 
 permissions:
   contents: write
@@ -21,10 +21,11 @@ jobs:
       - run: pip install requests beautifulsoup4
 
       - run: python update_calendar.py
+        continue-on-error: true   # one team failing shouldn't block the other's update
 
       - name: Commit if the schedule changed
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          git add heritage-hills-basketball.ics
+          git add '*.ics'
           git diff --cached --quiet || (git commit -m "Update schedule" && git push)
