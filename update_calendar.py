@@ -17,26 +17,35 @@ import requests
 from bs4 import BeautifulSoup
 
 # ---- Configuration ---------------------------------------------------------
-URL = "https://amarillo.kidsinc.org/schedule/?team_id=39271"
-OUTPUT = "heritage-hills-basketball.ics"
+TEAMS = [
+    {
+        "url": "https://amarillo.kidsinc.org/schedule/?team_id=39271",
+        "output": "heritage-hills-basketball.ics",
+        "name": "Heritage Hills Basketball (Wesley)",
+    },
+    {
+        "url": "https://amarillo.kidsinc.org/schedule/?team_id=39873",
+        "output": "heritage-hills-soccer.ics",
+        "name": "Heritage Hills Soccer (Jeanice)",
+    },
+]
 TZ_NAME = "America/Chicago"
 GAME_LENGTH = timedelta(hours=1)  # the site doesn't list durations
 # ----------------------------------------------------------------------------
 
 TZ = ZoneInfo(TZ_NAME)
-TEAM_ID = re.search(r"team_id=(\d+)", URL).group(1)
 
 DATE_RE = re.compile(r"[A-Z]{3},\s+([A-Z]{3})\s+(\d{1,2})\s+(\d{4})", re.I)
 TIME_RE = re.compile(r"(\d{1,2}):(\d{2})\s*([AP]M)", re.I)
 RECORD_RE = re.compile(r"^\d+-\d+-\d+$")
 
 
-def fetch(path=None):
+def fetch(url, path=None):
     if path:
         with open(path, encoding="utf-8") as f:
             return f.read()
     r = requests.get(
-        URL,
+        url,
         headers={"User-Agent": "Mozilla/5.0 (schedule-to-ics; personal use)"},
         timeout=30,
     )
@@ -44,7 +53,7 @@ def fetch(path=None):
     return r.text
 
 
-def parse(html):
+def parse(html, team_id):
     soup = BeautifulSoup(html, "html.parser")
 
     title = soup.title.get_text(strip=True) if soup.title else ""
@@ -79,6 +88,7 @@ def parse(html):
                 not line
                 or line in teams
                 or RECORD_RE.match(line)
+                or line.isdigit()
                 or DATE_RE.search(line)
                 or TIME_RE.fullmatch(line)
             ):
@@ -86,7 +96,7 @@ def parse(html):
             venue_parts.append(line.replace("·", "-").strip(" -"))
         venue = " - ".join(p for p in venue_parts if p)
 
-        uid = f"team{TEAM_ID}-{start:%Y%m%dT%H%M}@kidsinc-calendar"
+        uid = f"team{team_id}-{start:%Y%m%dT%H%M}@kidsinc-calendar"
         games[uid] = {
             "start": start,
             "summary": f"{teams[0]} vs {teams[1]}",
@@ -120,7 +130,7 @@ def fold(line):
     return "\r\n".join(out)
 
 
-def build_ics(team, games, modified):
+def build_ics(team, games, modified, url):
     stamp = (modified or datetime(2026, 1, 1, tzinfo=TZ)).astimezone(timezone.utc)
     stamp = stamp.strftime("%Y%m%dT%H%M%SZ")
     lines = [
@@ -163,20 +173,33 @@ def build_ics(team, games, modified):
         ]
         if g["venue"]:
             lines.append(f"LOCATION:{esc(g['venue'])}")
-        lines += [f"DESCRIPTION:{esc('Source: ' + URL)}", "END:VEVENT"]
+        lines += [f"DESCRIPTION:{esc('Source: ' + url)}", "END:VEVENT"]
     lines.append("END:VCALENDAR")
     return "\r\n".join(fold(l) for l in lines) + "\r\n"
 
 
 def main():
-    html = fetch(sys.argv[1] if len(sys.argv) > 1 else None)
-    team, games, modified = parse(html)
-    if not games:
-        # Don't overwrite a good calendar with an empty one if the page changes.
-        sys.exit("No games found - page layout may have changed. Leaving file untouched.")
-    with open(OUTPUT, "w", newline="", encoding="utf-8") as f:
-        f.write(build_ics(team, games, modified))
-    print(f"Wrote {len(games)} games to {OUTPUT}")
+    test_file = sys.argv[1] if len(sys.argv) > 1 else None  # parse a saved page (first team only)
+    failed = False
+    for n, t in enumerate(TEAMS):
+        team_id = re.search(r"team_id=(\d+)", t["url"]).group(1)
+        try:
+            html = fetch(t["url"], test_file if n == 0 else None)
+            _, games, modified = parse(html, team_id)
+        except Exception as e:
+            print(f"{t['name']}: fetch/parse failed ({e}) - leaving file untouched")
+            failed = True
+            continue
+        if not games:
+            # Don't overwrite a good calendar with an empty one if the page changes.
+            print(f"{t['name']}: no games found - leaving file untouched")
+            failed = True
+            continue
+        with open(t["output"], "w", newline="", encoding="utf-8") as f:
+            f.write(build_ics(t["name"], games, modified, t["url"]))
+        print(f"{t['name']}: wrote {len(games)} games to {t['output']}")
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
